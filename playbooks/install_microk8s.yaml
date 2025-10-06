@@ -1,0 +1,357 @@
+- name: Instalar MicroK8s, deploy whoami e stack de observabilidade
+  hosts: all
+  become: true
+  vars:
+    microk8s_channel: "1.34/stable"
+    kubeconfig_path: /var/snap/microk8s/current/credentials/client.config
+    app_name: whoami
+    app_namespace: apps
+    whoami_image: containous/whoami:latest
+    whoami_ingress_host: "whoami.local"
+  tasks:
+    ########################################################################
+    # Instalar snapd e MicroK8s
+    ########################################################################
+    - name: Instalar snapd se não existir
+      ansible.builtin.package:
+        name: snapd
+        state: present
+    - name: Instalar MicroK8s via snap
+      ansible.builtin.snap:
+        name: microk8s
+        classic: yes
+        channel: "{{ microk8s_channel }}"
+        state: present
+    ########################################################################
+    # Detectar usuário atual
+    ########################################################################
+    - name: Detectar usuário que executa o playbook
+      ansible.builtin.command: whoami
+      register: current_user
+      changed_when: false
+    - name: Adicionar usuário atual ao grupo microk8s
+      ansible.builtin.user:
+        name: "{{ current_user.stdout }}"
+        groups: microk8s
+        append: yes
+    - name: Ajustar permissões do kubeconfig
+      ansible.builtin.file:
+        path: "{{ kubeconfig_path }}"
+        owner: "{{ current_user.stdout }}"
+        group: microk8s
+        mode: '0640'
+    ########################################################################
+    # Habilitar addons essenciais
+    ########################################################################
+    - name: Obter status atual dos addons do MicroK8s
+      ansible.builtin.command: microk8s status --format yaml
+      register: microk8s_status
+      changed_when: false
+      failed_when: false
+    - name: Habilitar DNS, Storage, Ingress e Observability se necessário
+      ansible.builtin.command: microk8s enable dns storage observability ingress metrics-server
+      when: >
+        (microk8s_status.stdout is search('running: True')) and (
+
+
+
+
+
+          (microk8s_status.stdout is not search('dns: enabled')) or
+          (microk8s_status.stdout is not search('storage: enabled')) or
+          (microk8s_status.stdout is not search('metrics-server: enabled')) or
+          (microk8s_status.stdout is not search('observability: enabled')) or
+          (microk8s_status.stdout is not search('ingress: enabled'))
+        )
+
+      changed_when: true
+      check_mode: no
+    ########################################################################
+    # Adicionar worker ao cluster (join)
+    ########################################################################
+    - name: Obter token de join do master
+      ansible.builtin.command: microk8s add-node
+      delegate_to: master
+      run_once: true
+      register: join_token
+      changed_when: false
+    ########################################################################
+    #  Deploy da aplicação whoami
+    ########################################################################
+    - name: Criar namespace da aplicação
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ app_namespace }}"
+            labels:
+              environment: production
+    - name: Deploy whoami com sidecar de métricas
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: whoami
+            namespace: "{{ app_namespace }}"
+            labels:
+              app: whoami
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: whoami
+            template:
+              metadata:
+                labels:
+                  app: whoami
+                  release: kube-prom-stack
+              spec:
+                containers:
+                  - name: whoami
+                    image: containous/whoami
+                    ports:
+                      - containerPort: 80
+                        name: http
+                  - name: metrics-sidecar
+                    image: nginx/nginx-prometheus-exporter:1.3.0
+                    args:
+                      - "-nginx.scrape-uri=http://127.0.0.1:80/"
+                      - "-web.listen-address=:9112"
+                    ports:
+                      - containerPort: 9112
+                        name: metrics
+    - name: Criar Service para whoami
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: whoami-svc
+            namespace: "{{ app_namespace }}"
+            labels:
+              app: whoami
+          spec:
+            type: ClusterIP
+            ports:
+              - port: 80
+                targetPort: 80
+                name: http
+              - port: 9112
+                targetPort: 9112
+                name: metrics
+            selector:
+              app: whoami
+    - name: Deploy HPA para whoami
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: whoami-hpa
+            namespace: "{{ app_namespace }}"
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: whoami
+            minReplicas: 2
+            maxReplicas: 5
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target:
+                    type: Utilization
+                    averageUtilization: 70
+    - name: Criar PodMonitor para whoami
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: PodMonitor
+          metadata:
+            name: whoami-podmonitor
+            namespace: "{{ app_namespace }}"
+            labels:
+              release: kube-prom-stack
+          spec:
+            selector:
+              matchLabels:
+                app: whoami
+            podMetricsEndpoints:
+              - port: metrics
+                path: /metrics
+                interval: 15s
+    ########################################################################
+    # Garantir CRD PodMonitor
+    ########################################################################
+    - name: Verificar se CRD PodMonitor existe
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: CustomResourceDefinition
+        name: podmonitors.monitoring.coreos.com
+      register: podmonitor_crd_info
+      failed_when: false
+    - name: Baixar CRD PodMonitor se não existir
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml
+        dest: /tmp/monitoring.coreos.com_podmonitors.yaml
+        mode: '0644'
+      when: podmonitor_crd_info.resources | length == 0
+    - name: Aplicar CRD PodMonitor
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        src: /tmp/monitoring.coreos.com_podmonitors.yaml
+      when: podmonitor_crd_info.resources | length == 0
+    ########################################################################
+    # Cert-Manager + Let's Encrypt
+    ########################################################################
+    - name: Habilitar cert-manager no MicroK8s
+      ansible.builtin.command: microk8s enable cert-manager
+      changed_when: true
+      check_mode: no
+    - name: Criar ClusterIssuer Let's Encrypt (staging)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-staging
+          spec:
+            acme:
+              server: https://acme-staging-v02.api.letsencrypt.org/directory
+              email: "carlosleosouza@gmail.com"
+              privateKeySecretRef:
+                name: letsencrypt-staging
+              solvers:
+                - http01:
+                    ingress:
+                      class: nginx
+    ########################################################################
+    # Ingress para whoami com TLS
+    ########################################################################
+    - name: Criar Ingress para whoami com TLS
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: whoami-ingress
+            namespace: "{{ app_namespace }}"
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-staging
+          spec:
+            ingressClassName: nginx
+            rules:
+              - host: "{{ whoami_ingress_host }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: "{{ app_name }}-svc"
+                          port:
+                            number: 80
+            tls:
+              - hosts:
+                  - "{{ whoami_ingress_host }}"
+                secretName: whoami-tls
+    ########################################################################
+    # NodePorts para observabilidade
+    ########################################################################
+    - name: Garantir Grafana como NodePort
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: grafana
+            namespace: observability
+          spec:
+            type: NodePort
+            selector:
+              app.kubernetes.io/name: grafana
+            ports:
+              - port: 3000
+                targetPort: 3000
+    - name: Garantir Prometheus como NodePort
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: prometheus
+            namespace: observability
+          spec:
+            type: NodePort
+            selector:
+              app.kubernetes.io/name: prometheus
+            ports:
+              - port: 9090
+                targetPort: 9090
+    - name: Garantir Alertmanager como NodePort
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: alertmanager
+            namespace: observability
+          spec:
+            type: NodePort
+            selector:
+              app.kubernetes.io/name: alertmanager
+            ports:
+              - port: 9093
+                targetPort: 9093
+    - name: Configurar NodePorts fixos para serviços de observabilidade
+      ansible.builtin.command: >
+        microk8s kubectl patch svc {{ item.name }} -n observability -p '{"spec": {"type": "NodePort","ports":[{"port":{{ item.port }},"targetPort":{{ item.targetPort }},"nodePort":{{ item.nodePort }}}]}}'
+
+      loop:
+        - {name: grafana, port: 3000, targetPort: 3000, nodePort: 32000}
+        - {name: prometheus, port: 9090, targetPort: 9090, nodePort: 30900}
+        - {name: alertmanager, port: 9093, targetPort: 9093, nodePort: 30903}
+        - {name: loki, port: 3100, targetPort: 3100, nodePort: 31000}
+      ignore_errors: yes
+    ########################################################################
+    # Exibir NodePorts
+    ########################################################################
+    - name: Obter todos os serviços do namespace observability
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Service
+        namespace: observability
+      register: observability_services
+    - name: Mostrar NodePorts dos serviços de observabilidade
+      debug:
+        msg: |
+          {% for svc in observability_services.resources %}
+          Serviço: {{ svc.metadata.name }}
+          {% for port in svc.spec.ports %}
+            Porta: {{ port.port }} → NodePort: {{ port.nodePort | default('não definido') }}
+          {% endfor %}
+          {% endfor %}
