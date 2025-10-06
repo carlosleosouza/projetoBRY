@@ -12,7 +12,7 @@
           kind: PrometheusRule
           metadata:
             name: whoami-alerts
-            namespace: monitoring
+            namespace: observability
           spec:
             groups:
               - name: whoami.rules
