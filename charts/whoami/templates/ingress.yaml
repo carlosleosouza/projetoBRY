@@ -4,7 +4,7 @@ kind: Ingress
 metadata:
   name: {{ include "whoami.fullname" $ }}-ingress
 spec:
-  ingressClassName: {{ .Values.ingress.ingressClassName | default "traefik" }}
+  ingressClassName: {{ .Values.ingress.ClassName | default "traefik" }}
   tls:
     {{- if .Values.ingress.tls.enabled }}
     {{- if .Values.ingress.tls.secretName }}

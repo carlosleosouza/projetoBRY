@@ -1,22 +1,39 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "whoami.fullname" . }}-deploy
+  name: {{ include "whoami.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    app: {{ include "whoami.name" . }}
+    {{- include "whoami.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.deployment.replicas }}
   selector:
     matchLabels:
-      app: {{ include "whoami.name" . }}
+      {{- include "whoami.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: {{ include "whoami.name" . }}
+        {{- include "whoami.selectorLabels" . | nindent 8 }}
+        {{- if .Values.monitoring.enabled }}
+        release: {{ .Values.monitoring.release }}
+        {{- end }}
     spec:
       containers:
-        - name: whoami
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        {{- range .Values.deployment.containers }}
+        - name: {{ .name }}
+          image: "{{ .image }}:{{ .tag }}"
+          imagePullPolicy: {{ .pullPolicy }}
+          {{- if .scrapeUri }}
+          args:
+            - "-nginx.scrape-uri={{ .scrapeUri }}"
+            - "-web.listen-address=:{{ .port }}"
+          {{- end }}
           ports:
-            - name: web
-              containerPort: {{ .Values.service.targetPort }}
+            - name: {{ .namePort }}
+              containerPort: {{ .port }}
+              protocol: TCP
+          {{- if and (eq .name "whoami") $.Values.resources }}
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          {{- end }}
+        {{- end }}

@@ -4,10 +4,10 @@
   vars:
     microk8s_channel: "1.34/stable"
     kubeconfig_path: /var/snap/microk8s/current/credentials/client.config
-    app_name: whoami
     app_namespace: apps
-    whoami_image: containous/whoami:latest
     whoami_ingress_host: "whoami.local"
+    helm_chart_path: "charts/whoami"
+    helm_release_name: "whoami"
   tasks:
     ########################################################################
     # Instalar snapd e MicroK8s
@@ -34,38 +34,39 @@
         name: "{{ current_user.stdout }}"
         groups: microk8s
         append: yes
-    - name: Ajustar permissões do kubeconfig
-      ansible.builtin.file:
-        path: "{{ kubeconfig_path }}"
-        owner: "{{ current_user.stdout }}"
-        group: microk8s
-        mode: '0640'
+    # - name: Ajustar permissões do kubeconfig
+    #   ansible.builtin.file:
+    #     path: "{{ kubeconfig_path }}"
+    #     owner: "{{ current_user.stdout }}"
+    #     group: microk8s
+    #     mode: '0640'
     ########################################################################
     # Habilitar addons essenciais
     ########################################################################
-    - name: Obter status atual dos addons do MicroK8s
-      ansible.builtin.command: microk8s status --format yaml
-      register: microk8s_status
+    - name: Aguardar MicroK8s estar pronto
+      ansible.builtin.command: microk8s status --wait-ready
       changed_when: false
+      timeout: 300
+
+    - name: Habilitar addons essenciais (um por vez)
+      ansible.builtin.command: "microk8s enable {{ item }}"
+      loop:
+        - dns
+        - storage
+        - metrics-server
+        - ingress
+      register: addon_result
+      changed_when: "'is already enabled' not in addon_result.stdout"
+      failed_when: 
+        - addon_result.rc != 0
+        - "'is already enabled' not in addon_result.stdout"
+
+    - name: Habilitar Observability
+      ansible.builtin.command: microk8s enable observability
+      register: obs_result
+      changed_when: "'is already enabled' not in obs_result.stdout"
       failed_when: false
-    - name: Habilitar DNS, Storage, Ingress e Observability se necessário
-      ansible.builtin.command: microk8s enable dns storage observability ingress metrics-server
-      when: >
-        (microk8s_status.stdout is search('running: True')) and (
-
-
-
-
-
-          (microk8s_status.stdout is not search('dns: enabled')) or
-          (microk8s_status.stdout is not search('storage: enabled')) or
-          (microk8s_status.stdout is not search('metrics-server: enabled')) or
-          (microk8s_status.stdout is not search('observability: enabled')) or
-          (microk8s_status.stdout is not search('ingress: enabled'))
-        )
-
-      changed_when: true
-      check_mode: no
+      ignore_errors: yes
     ########################################################################
     # Adicionar worker ao cluster (join)
     ########################################################################
@@ -78,121 +79,45 @@
     ########################################################################
     #  Deploy da aplicação whoami
     ########################################################################
-    - name: Criar namespace da aplicação
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig_path }}"
+    - name: Criar diretório para helm charts no host remoto
+      ansible.builtin.file:
+        path: /tmp/helm-charts
+        state: directory
+        mode: '0755'
+
+    - name: Copiar chart do whoami para o host remoto
+      ansible.builtin.copy:
+        src: ../charts/whoami/
+        dest: /tmp/helm-charts/whoami/
+        mode: '0755'
+
+    - name: Instalar/Atualizar Helm release do whoami
+      kubernetes.core.helm:
+        name: whoami
+        chart_ref: /tmp/helm-charts/whoami
+        release_namespace: default
         state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ app_namespace }}"
-            labels:
-              environment: production
-    - name: Deploy whoami com sidecar de métricas
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig_path }}"
-        state: present
-        definition:
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: whoami
-            namespace: "{{ app_namespace }}"
-            labels:
-              app: whoami
-          spec:
-            replicas: 2
-            selector:
-              matchLabels:
-                app: whoami
-            template:
-              metadata:
-                labels:
-                  app: whoami
-                  release: kube-prom-stack
-              spec:
-                containers:
-                  - name: whoami
-                    image: containous/whoami
-                    ports:
-                      - containerPort: 80
-                        name: http
-                  - name: metrics-sidecar
-                    image: nginx/nginx-prometheus-exporter:1.3.0
-                    args:
-                      - "-nginx.scrape-uri=http://127.0.0.1:80/"
-                      - "-web.listen-address=:9112"
-                    ports:
-                      - containerPort: 9112
-                        name: metrics
-    - name: Criar Service para whoami
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig_path }}"
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: whoami-svc
-            namespace: "{{ app_namespace }}"
-            labels:
-              app: whoami
-          spec:
-            type: ClusterIP
-            ports:
-              - port: 80
-                targetPort: 80
-                name: http
-              - port: 9112
-                targetPort: 9112
-                name: metrics
-            selector:
-              app: whoami
-    - name: Deploy HPA para whoami
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig_path }}"
-        state: present
-        definition:
-          apiVersion: autoscaling/v2
-          kind: HorizontalPodAutoscaler
-          metadata:
-            name: whoami-hpa
-            namespace: "{{ app_namespace }}"
-          spec:
-            scaleTargetRef:
-              apiVersion: apps/v1
-              kind: Deployment
-              name: whoami
+        kubeconfig: /var/snap/microk8s/current/credentials/client.config
+        values:
+          replicaCount: 2
+          image:
+            repository: containous/whoami
+            tag: latest
+          ingress:
+            enabled: true
+            host: "{{ whoami_ingress_host }}"
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-staging
+          autoscaling:
+            enabled: true
             minReplicas: 2
             maxReplicas: 5
-            metrics:
-              - type: Resource
-                resource:
-                  name: cpu
-                  target:
-                    type: Utilization
-                    averageUtilization: 70
-    - name: Criar PodMonitor para whoami
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig_path }}"
-        state: present
-        definition:
-          apiVersion: monitoring.coreos.com/v1
-          kind: PodMonitor
-          metadata:
-            name: whoami-podmonitor
-            namespace: "{{ app_namespace }}"
-            labels:
-              release: kube-prom-stack
-          spec:
-            selector:
-              matchLabels:
-                app: whoami
-            podMetricsEndpoints:
-              - port: metrics
-                path: /metrics
-                interval: 15s
+            targetCPUUtilizationPercentage: 70
+          monitoring:
+            enabled: true
+            release: kube-prom-stack
+        wait: true
+        wait_timeout: 5m
     ########################################################################
     # Garantir CRD PodMonitor
     ########################################################################
@@ -241,38 +166,38 @@
                 - http01:
                     ingress:
                       class: nginx
-    ########################################################################
-    # Ingress para whoami com TLS
-    ########################################################################
-    - name: Criar Ingress para whoami com TLS
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig_path }}"
-        state: present
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: whoami-ingress
-            namespace: "{{ app_namespace }}"
-            annotations:
-              cert-manager.io/cluster-issuer: letsencrypt-staging
-          spec:
-            ingressClassName: nginx
-            rules:
-              - host: "{{ whoami_ingress_host }}"
-                http:
-                  paths:
-                    - path: /
-                      pathType: Prefix
-                      backend:
-                        service:
-                          name: "{{ app_name }}-svc"
-                          port:
-                            number: 80
-            tls:
-              - hosts:
-                  - "{{ whoami_ingress_host }}"
-                secretName: whoami-tls
+    # ########################################################################
+    # # Ingress para whoami com TLS
+    # ########################################################################
+    # - name: Criar Ingress para whoami com TLS
+    #   kubernetes.core.k8s:
+    #     kubeconfig: "{{ kubeconfig_path }}"
+    #     state: present
+    #     definition:
+    #       apiVersion: networking.k8s.io/v1
+    #       kind: Ingress
+    #       metadata:
+    #         name: whoami-ingress
+    #         namespace: "{{ app_namespace }}"
+    #         annotations:
+    #           cert-manager.io/cluster-issuer: letsencrypt-staging
+    #       spec:
+    #         ingressClassName: nginx
+    #         rules:
+    #           - host: "{{ whoami_ingress_host }}"
+    #             http:
+    #               paths:
+    #                 - path: /
+    #                   pathType: Prefix
+    #                   backend:
+    #                     service:
+    #                       name: "{{ app_name }}-svc"
+    #                       port:
+    #                         number: 80
+    #         tls:
+    #           - hosts:
+    #               - "{{ whoami_ingress_host }}"
+    #             secretName: whoami-tls
     ########################################################################
     # NodePorts para observabilidade
     ########################################################################

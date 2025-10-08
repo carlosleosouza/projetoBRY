@@ -1,17 +1,67 @@
 fullnameOverride: ""
 nameOverride: ""
 
-image:
-  repository: traefik/whoami
-  tag: latest
+deployment:
+  replicas: 2
+  containers:
+    - name: whoami
+      image: containous/whoami
+      pullPolicy: Always
+      tag: latest
+      namePort: http
+      port: 80
+    - name: metrics-sidecar
+      image: nginx/nginx-prometheus-exporter
+      pullPolicy: Always
+      tag: 1.3.0
+      port: 9112
+      namePort: metrics
+      scrapeUri: "http://127.0.0.1:80/"
+
+# metricsSidecar:
+#   enabled: true
+#   image:
+#     repository: nginx/nginx-prometheus-exporter
+#     tag: "1.3.0"
+#   port: 9112
+#   scrapeUri: "http://127.0.0.1:80/"
 
 service:
   type: ClusterIP
   port: 80
-  targetPort: 80
+  metricsPort: 9112
+  targetPort: 8080
 
-deployment:
-  replicas: 2
+ingress:
+  enabled: true
+  ClassName: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+  hosts:
+    - host: whoami.local
+      paths:
+        - path: /
+          pathType: Prefix
+          port: 80
+  tls:
+    enabled: true
+    secretName: whoami-tls
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+monitoring:
+  enabled: true
+  interval: 15s
+  release: kube-prom-stack
+
+labels:
+  environment: production
 
 hpa:
   enabled: true
@@ -40,16 +90,3 @@ hpa:
         - type: Pods
           value: 4
           periodSeconds: 15
-
-ingress:
-  enabled: true
-  ingressClassName: "traefik"
-  hosts:
-    - host: whoami.local
-      paths:
-        - path: /
-          pathType: Prefix
-          port: 80
-  tls:
-    enabled: true
-    secretName: whoami-tls

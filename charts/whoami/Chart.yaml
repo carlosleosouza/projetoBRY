@@ -1,6 +1,13 @@
 apiVersion: v2
 name: whoami
-description: Helm chart para deploy da aplicação WhoAmI
+description: Chart Helm aplicação Whoami
 type: application
-version: 0.1.0
-appVersion: "1.0"
+version: 1.0.0
+appVersion: "latest"
+keywords:
+  - whoami
+  - microk8s
+  - observability
+maintainers:
+  - name: Carlos Leonardo
+    email: carlosleosouza@gmail.com
