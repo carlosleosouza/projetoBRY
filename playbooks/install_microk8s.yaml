@@ -47,7 +47,6 @@
       ansible.builtin.command: microk8s status --wait-ready
       changed_when: false
       timeout: 300
-
     - name: Habilitar addons essenciais (um por vez)
       ansible.builtin.command: "microk8s enable {{ item }}"
       loop:
@@ -57,10 +56,9 @@
         - ingress
       register: addon_result
       changed_when: "'is already enabled' not in addon_result.stdout"
-      failed_when: 
+      failed_when:
         - addon_result.rc != 0
         - "'is already enabled' not in addon_result.stdout"
-
     - name: Habilitar Observability
       ansible.builtin.command: microk8s enable observability
       register: obs_result
@@ -84,38 +82,121 @@
         path: /tmp/helm-charts
         state: directory
         mode: '0755'
-
     - name: Copiar chart do whoami para o host remoto
       ansible.builtin.copy:
         src: ../charts/whoami/
         dest: /tmp/helm-charts/whoami/
         mode: '0755'
-
     - name: Instalar/Atualizar Helm release do whoami
       kubernetes.core.helm:
         name: whoami
         chart_ref: /tmp/helm-charts/whoami
-        release_namespace: default
+        release_namespace: apps
+        create_namespace: yes
         state: present
         kubeconfig: /var/snap/microk8s/current/credentials/client.config
         values:
-          replicaCount: 2
-          image:
-            repository: containous/whoami
-            tag: latest
+          fullnameOverride: ""
+          nameOverride: ""
+          deployment:
+            replicas: 2
+            containers:
+              - name: whoami
+                image: containous/whoami
+                pullPolicy: Always
+                tag: latest
+                namePort: http
+                port: 80
+              - name: metrics-sidecar
+                image: nginx/nginx-prometheus-exporter
+                pullPolicy: Always
+                tag: 1.3.0
+                port: 9112
+                namePort: metrics
+                scrapeUri: "http://127.0.0.1:80/"
+          # metricsSidecar:
+          #   enabled: true
+          #   image:
+          #     repository: nginx/nginx-prometheus-exporter
+          #     tag: "1.3.0"
+          #   port: 9112
+          #   scrapeUri: "http://127.0.0.1:80/"
+          service:
+            type: ClusterIP
+            port: 80
+            metricsPort: 9112
+            targetPort: 8080
           ingress:
             enabled: true
-            host: "{{ whoami_ingress_host }}"
+            ClassName: nginx
             annotations:
               cert-manager.io/cluster-issuer: letsencrypt-staging
-          autoscaling:
-            enabled: true
-            minReplicas: 2
-            maxReplicas: 5
-            targetCPUUtilizationPercentage: 70
+            hosts:
+              - host: whoami.local
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    port: 80
+            tls:
+              enabled: true
+              secretName: whoami-tls
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
           monitoring:
             enabled: true
+            interval: 15s
             release: kube-prom-stack
+          labels:
+            environment: production
+          hpa:
+            enabled: true
+            minReplicas: 2
+            maxReplicas: 4
+            targetCPUUtilizationPercentage: 80
+            targetMemoryUtilizationPercentage: 80
+            behavior:
+              scaleUp:
+                stabilizationWindowSeconds: 5 # tempo em segundos para observar antes de aumentar
+                selectPolicy: Max # pode ser Max, Min ou Disabled
+                policies:
+                  - type: Percent
+                    value: 100 # Pode ser Percent ou Pods. É o Percentual ou número de pods aumentar de uma vez
+                    periodSeconds: 60 # período em segundos para aplicar a política
+                  - type: Pods
+                    value: 4 # Pode ser Percent ou Pods. É o Percentual ou número de pods aumentar de uma vez
+                    periodSeconds: 60 # período em segundos para aplicar a política
+              scaleDown:
+                stabilizationWindowSeconds: 300
+                selectPolicy: Min
+                policies:
+                  - type: Percent
+                    value: 100
+                    periodSeconds: 15
+                  - type: Pods
+                    value: 4
+                    periodSeconds: 15
+        # replicaCount: 2
+        # image:
+        #   repository: containous/whoami
+        #   tag: latest
+        # ingress:
+        #   enabled: true
+        #   host: "{{ whoami_ingress_host }}"
+        #   annotations:
+        #     cert-manager.io/cluster-issuer: letsencrypt-staging
+        # autoscaling:
+        #   enabled: true
+        #   minReplicas: 2
+        #   maxReplicas: 5
+        #   targetCPUUtilizationPercentage: 70
+        # monitoring:
+        #   enabled: true
+        #   release: kube-prom-stack
         wait: true
         wait_timeout: 5m
     ########################################################################

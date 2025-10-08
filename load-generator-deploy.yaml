@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+      - name: hey
+        image: williamyeh/hey
+        args:
+          - "-z"
+          - "10m"
+          - "-c"
+          - "100"
+          - "-q"
+          - "500"
+          - "http://whoami-svc.apps.svc.cluster.local"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fortio-load
+  namespace: apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fortio-load
+  template:
+    metadata:
+      labels:
+        app: fortio-load
+    spec:
+      containers:
+      - name: fortio
+        image: fortio/fortio
+        args:
+          - "load"
+          - "-c"
+          - "50"                  # 50 conexões concorrentes
+          - "-qps"
+          - "0"                   # ilimitado
+          - "-t"
+          - "10m"                 # duração 10 minutos
+          - "http://whoami-svc.apps.svc.cluster.local"
+

@@ -9,7 +9,7 @@ deployment:
       pullPolicy: Always
       tag: latest
       namePort: http
-      port: 80
+      port: 8080
     - name: metrics-sidecar
       image: nginx/nginx-prometheus-exporter
       pullPolicy: Always
@@ -49,11 +49,11 @@ ingress:
 
 resources:
   limits:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 1
+    memory: 64Mi
   requests:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 0.5
+    memory: 32Mi
 
 monitoring:
   enabled: true
