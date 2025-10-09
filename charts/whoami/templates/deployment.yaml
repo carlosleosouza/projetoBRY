@@ -14,26 +14,25 @@ spec:
     metadata:
       labels:
         {{- include "whoami.selectorLabels" . | nindent 8 }}
-        {{- if .Values.monitoring.enabled }}
-        release: {{ .Values.monitoring.release }}
-        {{- end }}
     spec:
       containers:
-        {{- range .Values.deployment.containers }}
-        - name: {{ .name }}
-          image: "{{ .image }}:{{ .tag }}"
-          imagePullPolicy: {{ .pullPolicy }}
-          {{- if .scrapeUri }}
+        {{- range $container := .Values.deployment.containers }}
+        - name: {{ $container.name }}
+          image: "{{ $container.image }}:{{ $container.tag }}"
+          imagePullPolicy: {{ $container.pullPolicy }}
+          {{- if $container.scrapeUri }}
           args:
-            - "-nginx.scrape-uri={{ .scrapeUri }}"
-            - "-web.listen-address=:{{ .port }}"
+            - "-nginx.scrape-uri={{ $container.scrapeUri }}"
+            - "-web.listen-address=:{{ $container.port }}"
           {{- end }}
           ports:
-            - name: {{ .namePort }}
-              containerPort: {{ .port }}
+            - name: {{ $container.namePort }}
+              containerPort: {{ $container.port }}
               protocol: TCP
-          {{- if and (eq .name "whoami") $.Values.resources }}
+          {{- if eq $container.name "whoami" }}
+          {{- if $.Values.resources }}
           resources:
             {{- toYaml $.Values.resources | nindent 12 }}
+          {{- end }}
           {{- end }}
         {{- end }}

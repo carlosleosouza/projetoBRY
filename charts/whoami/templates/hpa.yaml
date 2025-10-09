@@ -5,12 +5,12 @@ metadata:
   name: {{ include "whoami.fullname" . }}-hpa
   namespace: {{ .Release.Namespace }}
   labels:
-    app: {{ include "whoami.name" . }}
+    {{- include "whoami.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "whoami.fullname" . }}-deploy
+    name: {{ include "whoami.fullname" . }}
   minReplicas: {{ .Values.hpa.minReplicas }}
   maxReplicas: {{ .Values.hpa.maxReplicas }}
   metrics:

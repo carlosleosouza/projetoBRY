@@ -4,12 +4,15 @@ metadata:
   name: {{ include "whoami.fullname" . }}-svc
   namespace: {{ .Release.Namespace }}
   labels:
-    app: {{ include "whoami.name" . }}
+    {{- include "whoami.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
-    - name: web
-      port: {{ .Values.service.port }}
-      targetPort: {{ .Values.service.targetPort }}
+    {{- range .Values.service.ports }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .targetPort }}
+      protocol: TCP
+    {{- end }}
   selector:
-    app: {{ include "whoami.name" . }}
+    {{- include "whoami.selectorLabels" . | nindent 4 }}
