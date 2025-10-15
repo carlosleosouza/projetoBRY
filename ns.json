@@ -1,0 +1,20 @@
+{
+    "apiVersion": "v1",
+    "kind": "Namespace",
+    "metadata": {
+        "creationTimestamp": "2025-10-08T23:07:18Z",
+        "deletionTimestamp": "2025-10-15T00:45:28Z",
+        "labels": {
+            "kubernetes.io/metadata.name": "apps",
+            "name": "apps"
+        },
+        "name": "apps",
+        "resourceVersion": "49641",
+        "uid": "683e2d28-a190-466d-b1a0-72386bc0d5c4"
+    },
+    "spec": {
+    },
+    "status": {
+        "phase": "Terminating"
+    }
+}
