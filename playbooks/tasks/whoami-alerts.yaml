@@ -67,7 +67,7 @@
                   # Réplicas disponíveis
                   - alert: WhoamiReplicaDown
                     expr: |
-                      kube_deployment_status_replicas_available{namespace="apps",deployment="whoami-deploy"} < 1
+                      kube_deployment_status_replicas_available{namespace="apps",deployment="whoami"} < 1
                     for: 2m
                     labels:
                       severity: critical
