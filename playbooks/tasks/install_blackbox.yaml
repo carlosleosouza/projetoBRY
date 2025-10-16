@@ -1,0 +1,155 @@
+---
+- name: Instalar Blackbox Exporter
+  hosts: master
+  become: yes
+  vars:
+    namespace: observability
+    release_name: blackbox-exporter
+    chart_repo: prometheus-community
+    chart_name: prometheus-blackbox-exporter
+    values_file: /tmp/blackbox-values.yaml
+    kubeconfig_path: /var/snap/microk8s/current/credentials/client.config
+    
+  tasks:
+    - name: Criar arquivo values.yaml para Blackbox Exporter
+      copy:
+        content: |
+          image:
+            repository: prom/blackbox-exporter
+            tag: v0.21.1
+            registry: docker.io
+          
+          serviceMonitor:
+            enabled: true
+            namespaceSelector:
+              matchNames:
+                - {{ namespace }}
+            selector:
+              matchLabels:
+                release: kube-prom-stack
+          
+          prometheusRule:
+            enabled: false
+          
+          # Configurações resource limits e requests
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          
+          # Config do blackbox para monitorar a aplicação whoami
+          config:
+            modules:
+              http_2xx:
+                prober: http
+                timeout: 5s
+                http:
+                  valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+                  valid_status_codes: []
+                  method: GET
+                  preferred_ip_protocol: "ip4"
+        dest: "{{ values_file }}"
+        mode: '0644'
+
+    - name: Adicionar repositório Helm do Prometheus Community
+      command: microk8s helm repo add {{ chart_repo }} https://prometheus-community.github.io/helm-charts
+      register: helm_repo
+      changed_when: "'Já existe' not in helm_repo.stderr"
+      failed_when: 
+        - helm_repo.rc != 0
+        - "'Já existe' not in helm_repo.stderr"
+
+    - name: Atualizar repositorios
+      command: microk8s helm repo update
+      changed_when: false
+
+    - name: Instalar/Atualizar Blackbox Exporter
+      command: >
+        microk8s helm upgrade --install {{ release_name }} 
+        {{ chart_repo }}/{{ chart_name }}
+        --namespace {{ namespace }}
+        --values {{ values_file }}
+      register: helm_result
+
+    - name: Mostrar resultados
+      debug:
+        var: helm_result.stdout_lines
+
+    - name: Esperar até o pod do Blackbox Exporter estar em execução
+      command: >
+        microk8s kubectl wait --for=condition=ready pod
+        -l app.kubernetes.io/name=prometheus-blackbox-exporter
+        -n {{ namespace }}
+        --timeout=300s
+      retries: 3
+      delay: 10
+
+    - name: Limpar arquivo values.yaml temporário
+      file:
+        path: "{{ values_file }}"
+        state: absent
+
+    ########################################################################
+    # Criando Probe para Whoami
+    ########################################################################
+    - name: Criar Probe para Whoami
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: Probe
+          metadata:
+            name: http-whoami
+            namespace: observability
+            labels:
+              release: kube-prom-stack
+          spec:
+            jobName: http-whoami
+            prober:
+              url: blackbox-exporter-prometheus-blackbox-exporter.observability.svc.cluster.local:9115
+              path: /probe
+            module: http_2xx
+            targets:
+              staticConfig:
+                static:
+                  - http://whoami-svc.apps.svc.cluster.local:80/
+    ########################################################################
+    # Criando Prometheus Rules para Whoami
+    ########################################################################
+    - name: Criar Prometheus Rules para Whoami
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: PrometheusRule
+          metadata:
+            name: alerts-whoami
+            namespace: observability
+            labels:
+              release: kube-prom-stack
+          spec:
+            groups:
+              - name: blackbox.whoami
+                rules:
+                  - alert: HWhoamiDown
+                    expr: probe_success{job="http-whoami"} == 0
+                    for: 2m
+                    labels:
+                      severity: critical
+                    annotations:
+                      summary: "Aplicação Whoami fora do ar"
+                      description: "A sonda HTTP para Whoami falhou por mais de 2 minutos."
+
+                  - alert: SSLCertExpiringSoon
+                    expr: probe_ssl_earliest_cert_expiration{job="probe-whoami"} - time() < 86400 * 15
+                    for: 1h
+                    labels:
+                      severity: warning
+                    annotations:
+                      summary: "Certificado SSL do whoami expirando"
+                      description: "O certificado SSL do whoami vai expirar em menos de 15 dias."

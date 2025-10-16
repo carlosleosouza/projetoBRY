@@ -20,15 +20,25 @@ spec:
         - name: {{ $container.name }}
           image: "{{ $container.image }}:{{ $container.tag }}"
           imagePullPolicy: {{ $container.pullPolicy }}
+          {{- if $container.command }}
+          command:
+            {{- toYaml $container.command | nindent 12 }}
+          {{- end }}
+          {{- if $container.args }}
+          args:
+            {{- toYaml $container.args | nindent 12 }}
+          {{- end }}
           {{- if $container.scrapeUri }}
           args:
             - "-nginx.scrape-uri={{ $container.scrapeUri }}"
             - "-web.listen-address=:{{ $container.port }}"
           {{- end }}
+          {{- if $container.namePort }}
           ports:
             - name: {{ $container.namePort }}
-              containerPort: {{ $container.port }}
+              containerPort: {{ $container.port | default 80 }}
               protocol: TCP
+          {{- end }}
           {{- if eq $container.name "whoami" }}
           {{- if $.Values.resources }}
           resources:

@@ -1,0 +1,139 @@
+- name: Debug Whoami Deployment
+  hosts: master
+  become: yes
+  vars:
+    kubeconfig_path: /var/snap/microk8s/current/credentials/client.config
+  
+  tasks:
+    - name: Instalar/Atualizar Helm release do whoami
+      kubernetes.core.helm:
+        name: whoami
+        chart_ref: /tmp/helm-charts/whoami
+        release_namespace: apps
+        create_namespace: yes
+        state: present
+        kubeconfig: "{{ kubeconfig_path }}"
+        values:
+          fullnameOverride: ""
+          nameOverride: ""
+          deployment:
+            replicas: 2
+            containers:
+              - name: whoami
+                image: containous/whoami
+                pullPolicy: Always
+                tag: latest
+                namePort: web
+                port: 80
+              - name: stress
+                image: polinux/stress
+                command: ["/bin/sh", "-c"]
+                args:
+                  - stress --cpu 2 --vm 1 --vm-bytes 128M --timeout 300s
+          service:
+            type: ClusterIP
+            ports:
+              - name: web
+                port: 80
+                targetPort: 80
+          ingress:
+            enabled: true
+            ClassName: nginx
+            annotations:
+              cert-manager.io/cluster-issuer: selfsigned-local
+            hosts:
+              - host: whoami.local
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    port: 80
+            tls:
+              enabled: false
+              secretName: whoami-tls
+          resources:
+            requests:
+              cpu: 100m 
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          hpa:
+            enabled: true
+            minReplicas: 2
+            maxReplicas: 10
+            targetCPUUtilizationPercentage: 30
+            targetMemoryUtilizationPercentage: 30
+            behavior:
+              scaleUp:
+                stabilizationWindowSeconds: 0
+                selectPolicy: Max
+                policies:
+                  - type: Percent
+                    value: 100
+                    periodSeconds: 15
+                  - type: Pods
+                    value: 2
+                    periodSeconds: 15
+              scaleDown:
+                stabilizationWindowSeconds: 60
+                selectPolicy: Min
+                policies:
+                  - type: Percent
+                    value: 50
+                    periodSeconds: 30
+        wait: true
+        wait_timeout: 5m
+      register: helm_output
+
+    - name: Mostrar output do Helm
+      debug:
+        var: helm_output
+
+    - name: Verificar release do Helm
+      command: helm list -n apps --kubeconfig {{ kubeconfig_path }}
+      register: helm_list
+      changed_when: false
+
+    - name: Mostrar releases instalados
+      debug:
+        var: helm_list.stdout_lines
+
+    - name: Verificar pods do whoami
+      command: kubectl get pods -n apps --kubeconfig {{ kubeconfig_path }}
+      register: pods_output
+      changed_when: false
+
+    - name: Mostrar pods
+      debug:
+        var: pods_output.stdout_lines
+
+    - name: Verificar deployment do whoami
+      command: kubectl get deployment -n apps --kubeconfig {{ kubeconfig_path }}
+      register: deployment_output
+      changed_when: false
+
+    - name: Mostrar deployments
+      debug:
+        var: deployment_output.stdout_lines
+
+    - name: Verificar events no namespace apps
+      command: kubectl get events -n apps --kubeconfig {{ kubeconfig_path }} --sort-by='.lastTimestamp'
+      register: events_output
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Mostrar eventos
+      debug:
+        var: events_output.stdout_lines
+      when: events_output.stdout_lines is defined
+
+    - name: Ver manifesto gerado pelo Helm
+      command: helm get manifest whoami -n apps --kubeconfig {{ kubeconfig_path }}
+      register: manifest_output
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Mostrar manifesto
+      debug:
+        var: manifest_output.stdout_lines
+      when: manifest_output.stdout_lines is defined

@@ -11,7 +11,11 @@ spec:
     {{- range .Values.service.ports }}
     - name: {{ .name }}
       port: {{ .port }}
-      targetPort: {{ .targetPort }}
+      {{- if kindIs "string" .targetPort }}
+      targetPort: {{ .targetPort }}  # Nome da porta
+      {{- else }}
+      targetPort: {{ .targetPort | int }}  # Número da porta
+      {{- end }}
       protocol: TCP
     {{- end }}
   selector:
